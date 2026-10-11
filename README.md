@@ -1,6 +1,7 @@
 # RVC_natural
 
-**A fork of [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) that removes the robotic texture from long S / SH sounds**, the most noticeable tell when converting a voice across a large pitch gap (e.g. male → female, transpose +12).
+**A fork of [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) that removes the robotic texture from long S / SH sounds**, the most noticeable tell when converting a voice across a large pitch gap (e.g. male → female, transpose +12). 
+Tested on model v1 only.
 
 Everything else is upstream RVC: training, inference, the real-time GUI and all models work as before. The fix is an optional post-filter, off by default.
 
