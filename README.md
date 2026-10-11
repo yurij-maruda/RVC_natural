@@ -78,6 +78,41 @@ python tools/artifact_detect/artifact_detect.py INPUT.wav RVC_OUTPUT.wav
 ```
 `--write-segments` and the analysis tool both write Audacity label files, so you can check every replaced spot by ear.
 
+## Preserving finished models
+
+Trained models are not part of the repository (`assets/` and `logs/` are git-ignored, and model files are too large for GitHub). Use `tools/model_backup.py` to pack a finished model into one zip you can keep in private cloud storage.
+
+A backup contains only what is needed to **use** the model, with repo-relative paths preserved:
+
+| File in the zip | Purpose |
+|---|---|
+| `assets/weights/<model>.pth` | the model used for conversion |
+| `assets/indices/<model>_added_….index` | feature index (used by *search feature ratio*) |
+| `logs/<model>/config.json` | training config (sample rate, architecture) |
+| `MODEL_BACKUP_<model>.json` | manifest: file list, sizes, SHA-256 checksums, your notes |
+
+Output directory: `assets/model_backups/<model_name>.zip`.
+
+Training checkpoints (`G_*.pth` / `D_*.pth`) are not included, so a backup can't be used to resume training.
+
+```bash
+# see which models exist and whether their files are complete
+python tools/model_backup.py --list
+
+# back up one model -> assets/model_backups/<model>.zip
+python tools/model_backup.py v6_MyVoice --notes "transpose +12, protect 0.33, transplant centroid 3000"
+
+# an existing <model>.zip is kept; the new one gets a timestamp, unless you pass --overwrite
+python tools/model_backup.py v6_MyVoice --overwrite
+
+# check a backup's integrity (e.g. after downloading it again)
+python tools/model_backup.py --verify assets/model_backups/v2_MyVoice.zip
+```
+
+Use `--notes` to record the conversion settings that work for the model; they are stored in the manifest and shown by `--verify`.
+
+**Restore:** unpack the zip at the repository root, keeping the folder structure, so the files land in `assets/weights/`, `assets/indices/` and `logs/<model>/`. Then restart the WebUI and pick the model and its index as usual. Run `--verify` on the zip first if it has been through cloud storage.
+
 ## Files
 
 | Path | What |
@@ -86,6 +121,7 @@ python tools/artifact_detect/artifact_detect.py INPUT.wav RVC_OUTPUT.wav
 | `infer/vc/modules.py` | Hook after single / batch conversion; never fails the conversion (falls back to the unprocessed output) |
 | `webui.py` | Checkbox, settings and help panel |
 | `tools/artifact_detect/` | CLI transplant and analysis tool |
+| `tools/model_backup.py` | Back up / verify finished models (inference files only) |
 
 ## Limitations
 
