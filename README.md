@@ -1,225 +1,104 @@
-<div align="center">
+# RVC_natural
 
-<h1>Retrieval-based-Voice-Conversion-WebUI</h1>
-简单易用的 语音音色转换/变声器 框架<br><br>
+**A fork of [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) that removes the robotic texture from long S / SH sounds**, the most noticeable tell when converting a voice across a large pitch gap (e.g. male → female, transpose +12).
 
-[![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange
-)](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+Everything else is upstream RVC: training, inference, the real-time GUI and all models work as before. The fix is an optional post-filter, off by default.
 
-<img src="https://counter.seku.su/cmoe?name=rvc&theme=r34" /><br>
+- Original project README: [upstream on GitHub](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) · [English](./docs/en/README.en.md) · [local copy of the upstream README](./docs/README.upstream.md)
 
-[![Licence](https://img.shields.io/badge/LICENSE-MIT-green.svg?style=for-the-badge)](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/main/LICENSE)
-[![Huggingface](https://img.shields.io/badge/🤗%20-Models-yellow.svg?style=for-the-badge)](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)
+---
 
+## Why this fork exists
 
-[**更新日志**](./docs/cn/Changelog_CN.md) | [**常见问题解答**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E8%A7%A3%E7%AD%94) | [**AutoDL·5毛钱训练AI歌手**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/Autodl%E8%AE%AD%E7%BB%83RVC%C2%B7AI%E6%AD%8C%E6%89%8B%E6%95%99%E7%A8%8B) | [**对照实验记录**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%AF%B9%E7%85%A7%E5%AE%9E%E9%AA%8C%C2%B7%E5%AE%9E%E9%AA%8C%E8%AE%B0%E5%BD%95) | [**在线演示**](https://modelscope.cn/studios/FlowerCry/RVCv2demo)
+With a well-trained, full-band RVC model, male → female conversion can sound natural, except for one stubborn artifact: **long, sustained S and SH sounds come out robotic**. Short sibilants are masked by the sounds around them; long ones expose a synthetic texture inside the hiss.
 
-[**English**](./docs/en/README.en.md) | [**中文简体**](./README.md) | [**日本語**](./docs/jp/README.ja.md) | [**한국어**](./docs/kr/README.ko.md) ([**韓國語**](./docs/kr/README.ko.han.md)) | [**Français**](./docs/fr/README.fr.md) | [**Türkçe**](./docs/tr/README.tr.md) | [**Português**](./docs/pt/README.pt.md)
+The usual knobs don't fix it:
 
-</div>
+- **Protect, index rate, pitch method, checkpoints, retraining:** no audible improvement on this artifact.
+- **Pitch tracking:** sibilants have no pitch at all, so pitch tweaks don't reach the problem.
+- **De-essing / EQ:** masks harshness, but the robotic texture stays.
+- **Other engines** (e.g. Seed-VC): no sibilant problem, but many new ones (flattened intonation, accent, 22 kHz output).
 
-> 底模使用接近50小时的开源高质量VCTK训练集训练，无版权方面的顾虑，请大家放心使用
+The reason is phonetic. Voiced sounds come from the vocal folds and carry the speaker's identity, which is what RVC must rebuild. **S, SH, CH and F are turbulent air at the teeth/tongue: no pitch and very little speaker identity.** RVC's generator still re-synthesizes them, and in long hiss its synthetic texture becomes audible. Your own recorded hiss, on the other hand, is already almost the right sound.
 
-> 请期待RVCv3的底模，参数更大，数据更大，效果更好，基本持平的推理速度，需要训练数据量更少。
+## The method: sibilant transplant
 
-<table>
-   <tr>
-		<td align="center">训练推理界面</td>
-		<td align="center">实时变声界面</td>
-	</tr>
-  <tr>
-		<td align="center"><img src="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/assets/129054828/092e5c12-0d49-4168-a590-0b0ef6a4f630"></td>
-    <td align="center"><img src="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/assets/129054828/730b4114-8805-44a1-ab1a-04668f3c30a6"></td>
-	</tr>
-	<tr>
-		<td align="center">go-webui.bat</td>
-		<td align="center">go-realtime_gui.bat</td>
-	</tr>
-  <tr>
-    <td align="center">可以自由选择想要执行的操作。</td>
-		<td align="center">我们已经实现端到端170ms延迟。如使用ASIO输入输出设备，已能实现端到端90ms延迟，但非常依赖硬件驱动支持。</td>
-	</tr>
-</table>
+For every conversion, the original input recording is analysed fresh, and in exactly the moments where it contains a long S/SH, the converted output above ~1.5 kHz is replaced by **the speaker's own real hiss**, shaped to fit the converted voice.
 
-## 简介
-本仓库具有以下特点
-+ 使用top1检索替换输入源特征为训练集特征来杜绝音色泄漏
-+ 即便在相对较差的显卡上也能快速训练
-+ 使用少量数据进行训练也能得到较好结果(推荐至少收集10分钟低底噪语音数据)
-+ 可以通过模型融合来改变音色(借助ckpt处理选项卡中的ckpt-merge)
-+ 简单易用的网页界面
-+ 可调用pymss/MSST模型来快速分离人声和伴奏
-+ 使用最先进的[人声音高提取算法InterSpeech2023-RMVPE](#参考项目)根绝哑音问题，速度快、资源占用小
-+ A卡/I卡使用 CPU 依赖方案；Windows 可使用 DirectML，Linux 使用 CPU
+```
+frequency
+ high ┤  ████ your real hiss ████     ← replaced, inside the detected segment only
+      │
+1.5kHz┤ - - - soft crossover - - -
+      │
+  low ┤  ░░░░ converted voice ░░░░    ← always kept
+      └──── time: long S, with 15 ms fades ────
+```
 
-点此查看我们的[演示视频](https://www.bilibili.com/video/BV1pm4y1z7Gm/) !
+**1. Detection (on the input, every call; no stored analysis)**
+- STFT at 48 kHz, 5 ms hop.
+- A frame is a fricative when energy 3.5–14 kHz exceeds energy 80–1200 Hz by > 3 dB, and the frame is not silence (> −50 dB re file max).
+- Frames are merged into segments (gaps ≤ 20 ms).
+- A segment is kept when it lasts ≥ *Min S duration* (80 ms) and its median spectral centroid is ≥ *Min hiss centroid* (6000 Hz = S only; 3000 Hz = S and SH).
 
-## 环境配置
+**2. Replacement (in the time–frequency domain)**
+- **Time:** the segment, with linear fades at both ends.
+- **Frequency:** above the crossover (default 1500 Hz, soft blend around it). Below it, the converted voice is always kept, so no trace of the source voice leaks in at segment edges.
+- **Loudness:** taken from the converted voice **frame by frame** (2.7 ms), so the hiss follows the converted voice's dynamics.
+- **Colour:** an optional mild EQ (≤ ±6 dB), learned from the replaced segments, bends the input hiss towards the converted S colour.
+- **Bandwidth:** the output's bandwidth is measured, and the input hiss is low-passed to it, so a band-limited model (e.g. ~10 kHz) never gets over-bright patches.
 
-本分支面向 **Python 3.12 x64**，请先进入仓库根目录。Ubuntu 推荐使用 Ubuntu 24.04 x86_64。
+Nothing is pitch-shifted: hiss has no pitch, and the transplant must happen **after** RVC, because RVC re-synthesizes everything it is given.
 
-### Ubuntu 24.04
+## Usage
 
+### WebUI (single and batch inference)
+Enable **"Sibilant transplant (fix robotic long S)"** in the inference tab. The settings are always visible below it, and a collapsible panel explains each one. After converting, the info text shows how many segments were replaced and the detected output bandwidth.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Min S duration (ms) | 80 | Only hiss at least this long is replaced. 0 = every detected hiss. |
+| Min hiss centroid (Hz) | 6000 | How bright the hiss must be. S ≈ 6–9 kHz, SH ≈ 3–4.5 kHz. Use 3000 to include SH. |
+| Fade (ms) | 15 | Cross-fade at both ends of each segment. |
+| Crossover (Hz) | 1500 | Below: converted voice kept. Above: input hiss. |
+| Colour EQ max (dB) | 6 | How strongly the hiss tone is bent towards the converted S. 0 = off. |
+| Match output bandwidth | on | Low-pass the hiss to the converted voice's bandwidth. |
+
+The input must be a file on disk; the original file is reloaded at full quality, because the pipeline's internal 16 kHz copy has nothing above 8 kHz.
+
+### Command line
 ```bash
-sudo apt update
-sudo apt install -y python3.12 python3.12-venv python3.12-dev ffmpeg unzip libsndfile1 libportaudio2
+# transplant: input recording + its RVC conversion -> fixed file
+python tools/artifact_detect/transplant.py INPUT.wav RVC_OUTPUT.wav [OUT.wav] \
+    [--min-dur 0.08] [--min-centroid 6000] [--fade-ms 15] [--crossover 1500] \
+    [--eq-max-db 6] [--bandwidth-thr-db -60] [--no-match-bandwidth] [--write-segments]
 
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
+# analysis: show which segments would be replaced (log, CSV, Audacity labels, plot)
+python tools/artifact_detect/artifact_detect.py INPUT.wav RVC_OUTPUT.wav
 ```
+`--write-segments` and the analysis tool both write Audacity label files, so you can check every replaced spot by ear.
 
-### Windows
+## Files
 
-安装 Python 3.12 x64 后创建虚拟环境：
+| Path | What |
+|---|---|
+| `infer/lib/sibilant_transplant.py` | Detection, transplant and the inference entry point (`apply_sibilant_transplant`) |
+| `infer/vc/modules.py` | Hook after single / batch conversion; never fails the conversion (falls back to the unprocessed output) |
+| `webui.py` | Checkbox, settings and help panel |
+| `tools/artifact_detect/` | CLI transplant and analysis tool |
 
-```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip setuptools wheel
-```
+## Limitations
 
-### 按硬件选择依赖
+- **Offline only for now** (WebUI inference). Real-time integration is the next step; the duration rule needs ~80 ms of look-ahead, or can be relaxed to "all S-type hiss".
+- **Use a full-band model** (output reaching ~16–20 kHz). On band-limited models the transplant blends in but can't fix the overall dull sound. Check your training data's spectrum before training.
+- **Thresholds were tuned on one male → female voice pair.** Other pairs (female → male, lisping speakers) may need different settings.
+- Voiced fricatives (Z, ZH) and SH at the very start of an utterance may be missed.
+- The transplanted hiss is literally the speaker's own; this is intended, since sibilants carry very little speaker identity.
 
-| 硬件 | 安装方式 |
-| --- | --- |
-| CPU、AMD、Intel | 使用 `requirments_cpu_py312.txt`；Windows 可使用 DirectML，Linux 使用 CPU |
-| NVIDIA RTX 50 系 | 先安装 CUDA 12.8 版 Torch，再安装 `requirments_cu128_py312.txt` |
-| NVIDIA RTX 50 系以前 | 先安装 CUDA 11.8 版 Torch，再安装 `requirments_cu118_py312.txt` |
+## Responsible use
 
-#### CPU、AMD、Intel
+Convert only voices you have permission to use, and don't use this to impersonate real people. Publish code, not other people's voice models or datasets.
 
-```bash
-python -m pip install -r requirments_cpu_py312.txt
-```
+## Credits & license
 
-#### NVIDIA RTX 50 系：两阶段安装
-
-```bash
-python -m pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
-python -m pip install -r requirments_cu128_py312.txt
-```
-
-#### NVIDIA RTX 50 系以前：两阶段安装
-
-```bash
-python -m pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 \
-  --index-url https://download.pytorch.org/whl/cu118 \
-  --extra-index-url https://pypi.org/simple
-python -m pip install -r requirments_cu118_py312.txt
-```
-
-检查 Torch 与 CUDA 状态：
-
-```bash
-python -c "import torch; print('torch:', torch.__version__); print('cuda:', torch.version.cuda); print('cuda available:', torch.cuda.is_available())"
-```
-
-
-### 修改下载源
-
-三个 `requirments_*.txt` 顶部已经包含下载源。中国大陆用户可保留默认镜像；需要使用官方源时，只替换 `--index-url` 和 `--extra-index-url`，保留包版本、CUDA 后缀和两阶段顺序。
-
-| Default mirror | Official source |
-| --- | --- |
-| `https://mirrors.pku.edu.cn/pypi/simple` | `https://pypi.org/simple` |
-| `https://mirrors.nju.edu.cn/pytorch/whl/cpu` | `https://download.pytorch.org/whl/cpu` |
-| `https://mirrors.nju.edu.cn/pytorch/whl/cu118` | `https://download.pytorch.org/whl/cu118` |
-| `https://mirrors.nju.edu.cn/pytorch/whl/cu128` | `https://download.pytorch.org/whl/cu128` |
-
-## 模型与运行目录
-
-WebUI 会自动创建运行目录。模型请从 [Hugging Face 模型仓库](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main) 下载，并保持以下路径：
-
-```text
-assets/
-├── hubert_base/
-│   ├── config.json
-│   ├── preprocessor_config.json
-│   └── pytorch_model.bin
-├── rmvpe/rmvpe.pt
-├── pretrained/
-├── pretrained_v2/
-├── pymss_weights/
-├── weights/        # user RVC .pth models
-└── indices/        # user .index files
-logs/
-└── mute/           # training silence samples
-
-# Exact paths used by the code
-assets/hubert_base/config.json
-assets/hubert_base/preprocessor_config.json
-assets/hubert_base/pytorch_model.bin
-assets/rmvpe/rmvpe.pt
-assets/pretrained/*.pth
-assets/pretrained_v2/*.pth
-assets/pymss_weights/*
-assets/weights/*.pth
-assets/indices/*.index
-logs/mute/*
-```
-
-### 下载模型
-
-```bash
-python -m pip install --upgrade huggingface_hub
-
-# Required for inference and feature extraction
-hf download lj1995/VoiceConversionWebUI --revision main --include "hubert_base/*" --local-dir assets
-hf download lj1995/VoiceConversionWebUI rmvpe.pt --revision main --local-dir assets/rmvpe
-
-# Required for v1/v2 training
-hf download lj1995/VoiceConversionWebUI --revision main --include "pretrained/*" "pretrained_v2/*" --local-dir assets
-hf download lj1995/VoiceConversionWebUI mute.zip --revision main --local-dir .model-downloads
-python -m zipfile -e .model-downloads/mute.zip logs
-
-# Required only for pymss/MSST vocal separation
-hf download lj1995/VoiceConversionWebUI --revision main --include "pymss_weights/*" --local-dir assets
-```
-
-仅 Windows AMD/Intel DirectML 环境还需要：
-
-```bash
-hf download lj1995/VoiceConversionWebUI rmvpe.onnx --revision main \
-  --local-dir assets/rmvpe
-```
-
-### FFmpeg
-
-Ubuntu 已在前面的系统依赖命令中安装 FFmpeg。Windows 用户可把下面两个文件放到项目根目录：
-
-- [ffmpeg.exe](https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/ffmpeg.exe?download=true)
-- [ffprobe.exe](https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/ffprobe.exe?download=true)
-
-## 开始使用
-
-启动 WebUI：
-
-```bash
-python webui.py
-```
-
-无桌面的 Ubuntu 服务器：
-
-```bash
-python webui.py --noautoopen
-```
-
-默认服务监听端口为 `7865`。用户自己的 `.pth` 模型放入 `assets/weights/`，`.index` 文件放入 `assets/indices/`。
-
-## 参考项目
-+ [ContentVec](https://github.com/auspicious3000/contentvec/)
-+ [VITS](https://github.com/jaywalnut310/vits)
-+ [HIFIGAN](https://github.com/jik876/hifi-gan)
-+ [Gradio](https://github.com/gradio-app/gradio)
-+ [FFmpeg](https://github.com/FFmpeg/FFmpeg)
-+ [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-+ [pymss-project/pymss](https://github.com/pymss-project/pymss)
-+ [audio-slicer](https://github.com/openvpi/audio-slicer)
-+ [Vocal pitch extraction:RMVPE](https://github.com/Dream-High/RMVPE)
-  + The pretrained model is trained and tested by [yxlllc](https://github.com/yxlllc/RMVPE) and [RVC-Boss](https://github.com/RVC-Boss).
-
-## 感谢所有贡献者作出的努力
-<a href="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/graphs/contributors" target="_blank">
-  <img src="https://contrib.rocks/image?repo=RVC-Project/Retrieval-based-Voice-Conversion-WebUI" />
-</a>
+Based on [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) by the RVC-Project team, MIT license (see [LICENSE](./LICENSE)). The sibilant-transplant post-filter and analysis tools in this fork are released under the same license.
