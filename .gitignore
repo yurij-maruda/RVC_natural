@@ -1,0 +1,9 @@
+﻿
+assets/
+logs/
+.idea/
+.venv/
+.model-downloads/
+TEMP/
+*.exe
+assets/pymss_weights/

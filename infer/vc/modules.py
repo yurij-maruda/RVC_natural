@@ -32,6 +32,52 @@ def inference_status(title, state, detail=""):
     return "\n".join(lines)
 
 
+def run_sibilant_transplant(
+    input_audio_path,
+    audio_opt,
+    tgt_sr,
+    min_dur_ms=80,
+    min_centroid=6000,
+    fade_ms=15,
+    crossover=1500,
+    eq_max_db=6,
+    match_bandwidth=True,
+):
+    """
+    Optional post-filter: replace long S sounds in the converted audio with the
+    original input's hiss. Never raises; on any problem the unprocessed audio is
+    returned. Returns (audio, n_segments or None, info line).
+    """
+    if not isinstance(input_audio_path, str) or not os.path.isfile(input_audio_path):
+        logger.warning(
+            "Sibilant transplant skipped: input is not a file path (%r)", input_audio_path
+        )
+        return audio_opt, None, "Sibilant transplant: skipped (input is not a file)"
+    try:
+        from infer.lib.sibilant_transplant import apply_sibilant_transplant
+
+        audio, n_segments, _, st = apply_sibilant_transplant(
+            input_audio_path,
+            audio_opt,
+            tgt_sr,
+            min_dur=float(min_dur_ms) / 1000,
+            min_centroid=float(min_centroid),
+            fade_ms=float(fade_ms),
+            crossover=float(crossover),
+            eq_max_db=float(eq_max_db),
+            match_bandwidth=bool(match_bandwidth),
+        )
+        bw = st.get("bandwidth_hz")
+        bw_txt = (", output bandwidth %.1f kHz (%s)" % (bw / 1000, "matched" if st.get("matched") else "not matched")) if bw else ""
+        return audio, n_segments, "Sibilant transplant: %d segments replaced%s" % (n_segments, bw_txt)
+    except Exception:
+        logger.warning(
+            "Sibilant transplant failed, returning unprocessed output\n%s",
+            traceback.format_exc(),
+        )
+        return audio_opt, None, "Sibilant transplant: failed, output left unprocessed (see log)"
+
+
 def normalized_speaker_info(checkpoint, n_spk):
     speaker_info = []
     seen = set()
@@ -234,7 +280,16 @@ class VC:
         resample_sr,
         rms_mix_rate,
         protect,
+        sibilant_transplant=False,
+        st_min_dur_ms=80,
+        st_min_centroid=6000,
+        st_fade_ms=15,
+        st_crossover=1500,
+        st_eq_max_db=6,
+        st_match_bandwidth=True,
     ):
+        # Segments replaced by the sibilant transplant in this call (None = not run / failed).
+        self.last_sibilant_segments = None
         if input_audio_path is None:
             return inference_status("单次推理", "等待输入", i18n("请上传音频文件")), None
         f0_up_key = int(f0_up_key)
@@ -286,21 +341,30 @@ class VC:
                 if os.path.exists(file_index)
                 else "%s：%s" % (i18n("索引"), i18n("未使用"))
             )
+            detail = "%s\n%s：%s %.2fs | F0 %.2fs | %s %.2fs" % (
+                index_info,
+                i18n("耗时"),
+                i18n("特征"),
+                times[0],
+                times[1],
+                i18n("合成"),
+                times[2],
+            )
+            if sibilant_transplant:
+                audio_opt, self.last_sibilant_segments, st_info = run_sibilant_transplant(
+                    input_audio_path,
+                    audio_opt,
+                    tgt_sr,
+                    st_min_dur_ms,
+                    st_min_centroid,
+                    st_fade_ms,
+                    st_crossover,
+                    st_eq_max_db,
+                    st_match_bandwidth,
+                )
+                detail = "%s\n%s" % (detail, st_info)
             return (
-                inference_status(
-                    "单次推理",
-                    "成功",
-                    "%s\n%s：%s %.2fs | F0 %.2fs | %s %.2fs"
-                    % (
-                        index_info,
-                        i18n("耗时"),
-                        i18n("特征"),
-                        times[0],
-                        times[1],
-                        i18n("合成"),
-                        times[2],
-                    ),
-                ),
+                inference_status("单次推理", "成功", detail),
                 (tgt_sr, audio_opt),
             )
         except Exception:
@@ -322,6 +386,13 @@ class VC:
         rms_mix_rate,
         protect,
         format1,
+        sibilant_transplant=False,
+        st_min_dur_ms=80,
+        st_min_centroid=6000,
+        st_fade_ms=15,
+        st_crossover=1500,
+        st_eq_max_db=6,
+        st_match_bandwidth=True,
     ):
         try:
             dir_path = (
@@ -365,6 +436,8 @@ class VC:
             success = 0
             failed = 0
             failures = []
+            st_files = 0  # files the sibilant transplant processed
+            st_segments = 0  # segments it replaced in total
             for idx, path in enumerate(paths):
                 item_failed = False
                 info, opt = self.vc_single(
@@ -377,7 +450,17 @@ class VC:
                     resample_sr,
                     rms_mix_rate,
                     protect,
+                    sibilant_transplant,
+                    st_min_dur_ms,
+                    st_min_centroid,
+                    st_fade_ms,
+                    st_crossover,
+                    st_eq_max_db,
+                    st_match_bandwidth,
                 )
+                if sibilant_transplant and self.last_sibilant_segments is not None:
+                    st_files += 1
+                    st_segments += self.last_sibilant_segments
                 if opt and opt[0] is not None and opt[1] is not None:
                     try:
                         tgt_sr, audio_opt = opt
@@ -414,7 +497,7 @@ class VC:
                     item_failed = True
                     failures.append("%s：%s" % (os.path.basename(path), info))
                 if should_report(idx, total) or item_failed:
-                    yield batch_status(
+                    status = batch_status(
                         i18n("批量推理"),
                         idx + 1,
                         total,
@@ -423,5 +506,11 @@ class VC:
                         os.path.basename(path),
                         failures,
                     )
+                    if sibilant_transplant:
+                        status += (
+                            "\nSibilant transplant: %d segments replaced in %d/%d files"
+                            % (st_segments, st_files, idx + 1)
+                        )
+                    yield status
         except Exception:
             yield inference_status("批量推理", "失败", traceback.format_exc())

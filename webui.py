@@ -276,6 +276,62 @@ def vc_multi_with_speaker(slider_value, dropdown_value, *args):
     yield from vc.vc_multi(selected_speaker_id(slider_value, dropdown_value), *args)
 
 
+SIBILANT_TRANSPLANT_HELP = """**How it works:** RVC re-synthesizes every sound, and long S/SH hiss can come out with a robotic texture. When enabled, the long S/SH sounds are found in your **original input**, and in exactly those moments the converted voice above the *crossover* frequency is replaced by **your own real hiss**. Its loudness always follows the converted voice frame by frame, so it blends in. Everything else stays as RVC made it. Detection runs fresh on every conversion (the original input file must be a file on disk).
+
+- **Min S duration (ms):** only hiss at least this long is replaced. Short S sounds are usually masked by the sounds around them; long, sustained ones expose the robotic texture. Default 80. *0* = replace every detected hiss. Raise it if too much gets replaced; lower it if short S sounds are robotic too.
+- **Min hiss centroid (Hz):** how "bright" a hiss in your input must be to count, measured as the frequency its energy is centred on. S ≈ 6–9 kHz, SH ≈ 3–4.5 kHz. *6000* = S only; *3000* = S and SH. Going lower may start catching F/TH or voiced sounds.
+- **Fade (ms):** cross-fade length at both ends of each replaced segment. Shorter = tighter cut but may click; longer = smoother but blends in more of the neighbouring (possibly robotic) edge. Default 15.
+- **Crossover (Hz):** below this frequency the converted voice is always kept; above it your hiss is used (soft blend over roughly ⅔–1⅓ of the value). Lower = more of your real hiss, but traces of your own voice at the segment edges can leak in; higher = more of the RVC sound is kept, including any buzz below. SH has energy around 2–3 kHz, so don't go much above 1500 when SH is included. Default 1500.
+- **Colour EQ max (dB):** how strongly the tone of your hiss is bent towards the tone of the converted S (the EQ is learned from the replaced segments each time). *0* = your hiss keeps its own colour; higher = closer to the model's S, including its dullness. Default 6.
+- **Match output bandwidth:** *on* = your hiss is cut off at the highest frequency the converted voice actually contains (detected automatically, shown in the info text), so it never sounds brighter than the voice around it. *off* = your full-band hiss is pasted in: crisper and more clearly "transplanted", but on band-limited models (e.g. ~10 kHz) it sounds brighter than the rest of the voice. On full-band models (~20 kHz) it makes almost no difference."""
+
+
+def sibilant_transplant_controls():
+    """Checkbox + settings (always visible) for the sibilant-transplant post-filter;
+    only the explanation text is collapsible. Settings are free number fields (no range limits).
+    Returns the components in the order vc_single / vc_multi expect them."""
+    enabled = gr.Checkbox(
+        label=i18n("Sibilant transplant (fix robotic long S)"),
+        value=False,
+        interactive=True,
+    )
+    with gr.Row():
+        min_dur = gr.Number(
+            value=80,
+            label=i18n("Min S duration (ms), 0 = transplant all S-type hiss"),
+            interactive=True,
+        )
+        min_centroid = gr.Number(
+            value=6000,
+            label=i18n("Min hiss centroid (Hz), lower = also catches SH"),
+            interactive=True,
+        )
+        fade = gr.Number(
+            value=15,
+            label=i18n("Fade (ms)"),
+            interactive=True,
+        )
+    with gr.Row():
+        crossover = gr.Number(
+            value=1500,
+            label=i18n("Crossover (Hz)"),
+            interactive=True,
+        )
+        eq_max = gr.Number(
+            value=6,
+            label=i18n("Colour EQ max (dB), 0 = off"),
+            interactive=True,
+        )
+        match_bw = gr.Checkbox(
+            label=i18n("Match output bandwidth"),
+            value=True,
+            interactive=True,
+        )
+    with gr.Accordion(i18n("Sibilant transplant: what the settings do"), open=False):
+        gr.Markdown(value=SIBILANT_TRANSPLANT_HELP)
+    return [enabled, min_dur, min_centroid, fade, crossover, eq_max, match_bw]
+
+
 sr_dict = {
     "32k": 32000,
     "40k": 40000,
@@ -777,11 +833,21 @@ def train_task_stopped(state):
 
 
 def start_train_process(state, cmd):
-    kwargs = {"shell": True, "cwd": now_dir}
+    # Scripts under train/ import top-level packages (infer, tools, train), so
+    # the repo root must be importable even outside the bundled runtime, and
+    # the script's own directory must not shadow the `train` package.
+    child_env = os.environ.copy()
+    child_env["PYTHONSAFEPATH"] = "1"
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (now_dir, child_env.get("PYTHONPATH")) if p
+    )
+    # ffmpeg/ffprobe may live in the repo root.
+    child_env["PATH"] = os.pathsep.join(
+        p for p in (now_dir, child_env.get("PATH")) if p
+    )
+    kwargs = {"shell": True, "cwd": now_dir, "env": child_env}
     if "train/train.py" in cmd.replace("\\", "/"):
-        training_env = os.environ.copy()
-        training_env["RVC_CUDA_GRAPH"] = "0"
-        kwargs["env"] = training_env
+        child_env["RVC_CUDA_GRAPH"] = "0"
     if platform.system() == "Windows":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -1932,6 +1998,8 @@ with gr.Blocks(title="RVC WebUI", css=TRAINING_INFO_CSS) as app:
                                 api_name="infer_refresh",
                             )
                 with gr.Group():
+                    sibilant_controls0 = sibilant_transplant_controls()
+                with gr.Group():
                     with gr.Column():
                         but0 = gr.Button(i18n("转换"), variant="primary")
                         with gr.Row():
@@ -1960,6 +2028,7 @@ with gr.Blocks(title="RVC WebUI", css=TRAINING_INFO_CSS) as app:
                                 resample_sr0,
                                 rms_mix_rate0,
                                 protect0,
+                                *sibilant_controls0,
                             ],
                             [vc_output1, vc_output2],
                             api_name="infer_convert",
@@ -2032,6 +2101,8 @@ with gr.Blocks(title="RVC WebUI", css=TRAINING_INFO_CSS) as app:
                             value=1,
                             interactive=True,
                         )
+                with gr.Group():
+                    sibilant_controls1 = sibilant_transplant_controls()
                 with gr.Row():
                     dir_input = gr.Textbox(
                         label=i18n(
@@ -2071,6 +2142,7 @@ with gr.Blocks(title="RVC WebUI", css=TRAINING_INFO_CSS) as app:
                             rms_mix_rate1,
                             protect1,
                             format1,
+                            *sibilant_controls1,
                         ],
                         [vc_output3],
                         api_name="infer_convert_batch",
