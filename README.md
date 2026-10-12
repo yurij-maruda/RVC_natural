@@ -1,7 +1,6 @@
 # RVC_natural
 
 **A fork of [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) that removes the robotic texture from long S / SH sounds**, the most noticeable tell when converting a voice across a large pitch gap (e.g. male → female, transpose +12). 
-Tested on model v1 only.
 
 Everything else is upstream RVC: training, inference, the real-time GUI and all models work as before. The fix is an optional post-filter, off by default.
 
@@ -67,6 +66,15 @@ Enable **"Sibilant transplant (fix robotic long S)"** in the inference tab. The 
 
 The input must be a file on disk; the original file is reloaded at full quality, because the pipeline's internal 16 kHz copy has nothing above 8 kHz.
 
+### Real-time GUI (experimental)
+`go-realtime_gui.bat` has a **Sibilant transplant** panel. Enable it before pressing start: the output is delayed by the **look-ahead** (default 120 ms), so each block is processed with enough future audio to apply the same "long S" rule as offline. While running, the checkbox switches between ON and bypass with the same delay (for live A/B), and all settings except the look-ahead update live. The input is the microphone at the stream's sample rate, so it is full band.
+
+Test the streaming version against the offline one without a microphone:
+```bash
+python tools/artifact_detect/rt_simulate.py INPUT.wav RVC_OUTPUT.wav --block 0.13 --lookahead 0.12
+```
+It writes `TEMP/rt_sim/rt.wav`, `offline.wav` and `diff.wav`, and prints the time per block and how far the streaming result is from the offline one.
+
 ### Command line
 ```bash
 # transplant: input recording + its RVC conversion -> fixed file
@@ -118,6 +126,7 @@ Use `--notes` to record the conversion settings that work for the model; they ar
 
 | Path | What |
 |---|---|
+| `infer/lib/sibilant_transplant_rt.py` | Streaming version (look-ahead delay line, running EQ / bandwidth), used by `realtime_gui.py` |
 | `infer/lib/sibilant_transplant.py` | Detection, transplant and the inference entry point (`apply_sibilant_transplant`) |
 | `infer/vc/modules.py` | Hook after single / batch conversion; never fails the conversion (falls back to the unprocessed output) |
 | `webui.py` | Checkbox, settings and help panel |
@@ -126,7 +135,6 @@ Use `--notes` to record the conversion settings that work for the model; they ar
 
 ## Limitations
 
-- **Offline only for now** (WebUI inference). Real-time integration is the next step; the duration rule needs ~80 ms of look-ahead, or can be relaxed to "all S-type hiss".
 - **Use a full-band model** (output reaching ~16–20 kHz). On band-limited models the transplant blends in but can't fix the overall dull sound. Check your training data's spectrum before training.
 - **Thresholds were tuned on one male → female voice pair.** Other pairs (female → male, lisping speakers) may need different settings.
 - Voiced fricatives (Z, ZH) and SH at the very start of an utterance may be missed.

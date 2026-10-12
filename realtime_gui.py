@@ -40,6 +40,7 @@ if __name__ == "__main__":
     from infer import rtrvc as rvc_for_realtime
     from i18n.i18n import I18nAuto
     from tools.cuda_graph import cuda_graph_enabled, run_cuda_graph
+    from infer.lib.sibilant_transplant_rt import RealtimeSibilantTransplant
 
     i18n = I18nAuto()
 
@@ -63,6 +64,14 @@ if __name__ == "__main__":
             self.wasapi_exclusive = False
             self.sg_input_device = ""
             self.sg_output_device = ""
+            # sibilant transplant (fix robotic long S / SH), see infer/lib/sibilant_transplant_rt.py
+            self.st_enable = False
+            self.st_min_dur = 80  # ms
+            self.st_min_centroid = 6000  # Hz
+            self.st_fade = 15  # ms
+            self.st_crossover = 1500  # Hz
+            self.st_eq_max = 6  # dB
+            self.st_lookahead = 0.12  # s
 
     class GUI:
         def __init__(self) :
@@ -77,6 +86,7 @@ if __name__ == "__main__":
             self.input_devices_indices = None
             self.output_devices_indices = None
             self.stream = None
+            self.st = None  # real-time sibilant transplant (None = not in the chain)
             self.update_devices()
             self.launcher()
 
@@ -388,6 +398,56 @@ if __name__ == "__main__":
                     ),
                 ],
                 [
+                    sg.Frame(
+                        layout=[
+                            [
+                                sg.Checkbox(
+                                    "Enable (live on/off; turning it on the first time restarts the stream)",
+                                    key="st_enable",
+                                    default=data.get("st_enable", False),
+                                    enable_events=True,
+                                ),
+                            ],
+                            [
+                                sg.Text("Min S duration (ms)"),
+                                sg.Slider(range=(0, 200), key="st_min_dur", resolution=5,
+                                          orientation="h", enable_events=True,
+                                          default_value=data.get("st_min_dur", 80)),
+                                sg.Text("Min hiss centroid (Hz)"),
+                                sg.Slider(range=(2000, 9000), key="st_min_centroid", resolution=100,
+                                          orientation="h", enable_events=True,
+                                          default_value=data.get("st_min_centroid", 6000)),
+                            ],
+                            [
+                                sg.Text("Fade (ms)"),
+                                sg.Slider(range=(5, 40), key="st_fade", resolution=1,
+                                          orientation="h", enable_events=True,
+                                          default_value=data.get("st_fade", 15)),
+                                sg.Text("Crossover (Hz)"),
+                                sg.Slider(range=(500, 4000), key="st_crossover", resolution=50,
+                                          orientation="h", enable_events=True,
+                                          default_value=data.get("st_crossover", 1500)),
+                            ],
+                            [
+                                sg.Text("Colour EQ max (dB)"),
+                                sg.Slider(range=(0, 12), key="st_eq_max", resolution=0.5,
+                                          orientation="h", enable_events=True,
+                                          default_value=data.get("st_eq_max", 6)),
+                                sg.Text("Look-ahead (s, restart)"),
+                                sg.Slider(range=(0.03, 0.5), key="st_lookahead", resolution=0.01,
+                                          orientation="h", enable_events=True,
+                                          default_value=data.get("st_lookahead", 0.12)),
+                            ],
+                            [
+                                sg.Text("Segments in last block:"),
+                                sg.Text("0", key="st_segments", size=(4, 1)),
+                                sg.Text("(look-ahead >= min duration + fade keeps the offline 'long S' rule exact)"),
+                            ],
+                        ],
+                        title="Sibilant transplant (fix robotic long S / SH)",
+                    )
+                ],
+                [
                     sg.Button(i18n("开始音频转换"), key="start_vc"),
                     sg.Button(i18n("停止音频转换"), key="stop_vc"),
                     sg.Radio(
@@ -470,6 +530,13 @@ if __name__ == "__main__":
                             "f0method": ["pm", "rmvpe", "fcpe"][
                                 [values["pm"], values["rmvpe"], values["fcpe"]].index(True)
                             ],
+                            "st_enable": values["st_enable"],
+                            "st_min_dur": values["st_min_dur"],
+                            "st_min_centroid": values["st_min_centroid"],
+                            "st_fade": values["st_fade"],
+                            "st_crossover": values["st_crossover"],
+                            "st_eq_max": values["st_eq_max"],
+                            "st_lookahead": values["st_lookahead"],
                         }
                         with open(realtime_config_path, "w", encoding="utf8") as j:
                             json.dump(settings, j)
@@ -482,6 +549,8 @@ if __name__ == "__main__":
                             )
                         if values["I_noise_reduce"]:
                             self.delay_time += min(values["crossfade_length"], 0.04)
+                        if self.st is not None:
+                            self.delay_time += self.st.delay_s
                         self.window["sr_stream"].update(self.gui_config.samplerate)
                         self.window["delay_time"].update(
                             int(np.round(self.delay_time * 1000))
@@ -518,6 +587,22 @@ if __name__ == "__main__":
                     self.gui_config.O_noise_reduce = values["O_noise_reduce"]
                 elif event in ["vc", "im"]:
                     self.function = event
+                elif event == "st_enable":
+                    self.gui_config.st_enable = values["st_enable"]
+                    if self.st is not None:
+                        self.st.enabled = values["st_enable"]
+                        printt("Sibilant transplant: %s", "ON" if values["st_enable"] else "bypass")
+                    elif values["st_enable"]:
+                        # no delay line yet: needs a restart to add the look-ahead
+                        self.stop_stream()
+                elif event in ["st_min_dur", "st_min_centroid", "st_fade",
+                               "st_crossover", "st_eq_max"]:
+                    setattr(self.gui_config, event, values[event])
+                    self.update_st_params()
+                elif event == "st_lookahead":
+                    self.gui_config.st_lookahead = values["st_lookahead"]
+                    if self.st is not None:
+                        self.stop_stream()  # delay length changes: restart needed
                 elif event == "stop_vc" or event != "start_vc":
                     # Other parameters do not support hot update
                     self.stop_stream()
@@ -563,7 +648,22 @@ if __name__ == "__main__":
             self.gui_config.f0method = ["pm", "rmvpe", "fcpe"][
                 [values["pm"], values["rmvpe"], values["fcpe"]].index(True)
             ]
+            for k in ("st_enable", "st_min_dur", "st_min_centroid", "st_fade",
+                      "st_crossover", "st_eq_max", "st_lookahead"):
+                setattr(self.gui_config, k, values[k])
             return True
+
+        def update_st_params(self):
+            if self.st is None:
+                return
+            c = self.gui_config
+            self.st.set_params(
+                min_dur=float(c.st_min_dur) / 1000.0,
+                min_centroid=float(c.st_min_centroid),
+                fade_ms=float(c.st_fade),
+                crossover=float(c.st_crossover),
+                eq_max_db=float(c.st_eq_max),
+            )
 
         def start_vc(self):
             torch.cuda.empty_cache()
@@ -680,6 +780,19 @@ if __name__ == "__main__":
             self.tg = TorchGate(
                 sr=self.gui_config.samplerate, n_fft=4 * self.zc, prop_decrease=0.9
             ).to(self.config.device)
+            if self.gui_config.st_enable:
+                self.st = RealtimeSibilantTransplant(
+                    self.gui_config.samplerate,
+                    self.block_frame,
+                    lookahead_s=float(self.gui_config.st_lookahead),
+                )
+                self.update_st_params()
+                printt(
+                    "Sibilant transplant: ON, look-ahead %d ms at %d Hz",
+                    int(self.st.delay_s * 1000), self.gui_config.samplerate,
+                )
+            else:
+                self.st = None
             self.prewarm_cuda_graph()
             self.start_stream()
 
@@ -924,16 +1037,30 @@ if __name__ == "__main__":
             self.sola_buffer[:] = infer_wav[
                 self.block_frame : self.block_frame + self.sola_buffer_frame
             ]
-            outdata[:] = (
-                infer_wav[: self.block_frame]
-                .repeat(self.gui_config.channels, 1)
-                .t()
-                .cpu()
-                .numpy()
-            )
+            out_block = infer_wav[: self.block_frame]
+            if self.st is not None:
+                # input samples aligned with this output block: infer_wav[0] matches
+                # input_wav[extra_frame], and SOLA dropped the first sola_offset samples
+                in_start = self.extra_frame + int(sola_offset)
+                in_block = self.input_wav[in_start : in_start + self.block_frame]
+                self.st.enabled = bool(
+                    self.gui_config.st_enable and self.function == "vc"
+                )
+                out_np = self.st.process(
+                    in_block.cpu().numpy(), out_block.cpu().numpy()
+                )
+                outdata[:] = np.repeat(
+                    out_np[:, None], self.gui_config.channels, axis=1
+                )
+            else:
+                outdata[:] = (
+                    out_block.repeat(self.gui_config.channels, 1).t().cpu().numpy()
+                )
             total_time = time.perf_counter() - start_time
             if flag_vc:
                 self.window["infer_time"].update(int(total_time * 1000))
+                if self.st is not None:
+                    self.window["st_segments"].update(str(self.st.last_segments))
             printt(i18n("推理耗时：%.2f秒"), total_time)
 
         def update_devices(self, hostapi_name=None):
